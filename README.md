@@ -68,7 +68,8 @@ python toe_ctl.py "op('/project1').par.something = 5"
          "command": "toe-mcp",
          "env": {
            "TD_BIN": "C:\\Program Files\\Derivative\\TouchDesigner\\bin",
-           "TD_BRIDGE_URL": "http://127.0.0.1:9980"
+           "TD_BRIDGE_URL": "http://127.0.0.1:9980",
+           "TD_MCP_URL": "http://127.0.0.1:9981"
          }
        }
      }
@@ -90,6 +91,15 @@ python toe_ctl.py "op('/project1').par.something = 5"
 | `td_ls` | 특정 op의 자식 노드 목록 |
 | `td_pars` | 특정 op의 파라미터와 현재 값 |
 | `td_perf` | 느린 오퍼레이터를 cook time 순으로 분석 (성능 진단) |
+| `td_optimize` | 진단 + **안전·되돌리기 가능한 속도 최적화** 적용 (포트 9981) |
+| `td_optimize_undo` | `td_optimize`가 바꾼 것을 전부 원복 |
+
+> **`td_optimize` / `td_optimize_undo`는 포트 9981** ([touchdesigner-mcp](https://github.com/8beeeaaat/touchdesigner-mcp)의
+> `mcp_webserver_base` .tox)을 씁니다. 나머지 `td_*` 도구는 `td_setup.py` 브릿지(포트 9980)를
+> 씁니다. 9981 주소는 `TD_MCP_URL` 환경변수로 바꿀 수 있습니다(기본 `http://127.0.0.1:9981`).
+> Claude에게 *"지금 열린 프로젝트 속도 개선해줘"* 라고 하면 `td_optimize(apply=True)`가 호출되어
+> **TOP 뷰어 끄기 + 과대 TOP 해상도 축소**를 적용하고, 마음에 안 들면 `td_optimize_undo`로 되돌립니다.
+> (자세한 동작은 아래 "속도(성능) 개선"의 9981 섹션과 동일합니다.)
 
 > 즉, "지금 TD를 프롬프트로 제어" = **브릿지(TD 안) + MCP 서버(Claude 쪽)** 둘 다
 > 준비되면 됩니다. 브릿지만 있으면 터미널 `toe_ctl.py`로, 여기에 MCP까지 붙이면

@@ -15,6 +15,7 @@ All tools operate on files on the local machine where this server runs.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import platform
@@ -630,6 +631,278 @@ def td_perf(top: int = 20) -> str:
     lines.append("Hints:")
     lines.extend("  - " + h for h in _perf_hints(summary, rows))
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Live optimization via the touchdesigner-mcp WebServer (port 9981)
+# ---------------------------------------------------------------------------
+# The td_* tools above talk to the td_setup.py bridge (port 9980). If instead
+# you run the third-party touchdesigner-mcp ``.tox`` (mcp_webserver_base), it
+# exposes a different HTTP contract on port 9981. td_optimize / td_optimize_undo
+# below drive THAT server: they profile the currently-open project and apply
+# safe, fully reversible speedups. Configure the endpoint with TD_MCP_URL
+# (default http://127.0.0.1:9981).
+#
+# The TD-side OPTIMIZE/UNDO scripts are the same contract as bridge/td9981.py —
+# keep the two copies in sync.
+
+
+def _tdmcp_url() -> str:
+    return os.environ.get("TD_MCP_URL", "http://127.0.0.1:9981").rstrip("/")
+
+
+def _tdmcp_exec(script: str) -> dict:
+    """POST a Python script to the touchdesigner-mcp exec endpoint."""
+    data = json.dumps({"script": script}).encode("utf-8")
+    req = urllib.request.Request(
+        _tdmcp_url() + "/api/td/server/exec",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_BRIDGE_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Cannot reach the touchdesigner-mcp server at {_tdmcp_url()} ({e}). "
+            f"Open TouchDesigner with the mcp_webserver_base .tox running (check "
+            f"{_tdmcp_url()}/health in a browser), or set TD_MCP_URL."
+        )
+
+
+def _coerce(x):
+    """Some touchdesigner-mcp builds return dicts/lists as JSON or repr strings."""
+    if isinstance(x, str):
+        for parse in (json.loads, ast.literal_eval):
+            try:
+                return parse(x)
+            except Exception:
+                pass
+    return x
+
+
+def _tdmcp_result(res: dict):
+    """Return the script's ``result``, tolerant of response nesting differences."""
+    d = res.get("data")
+    if isinstance(d, dict):
+        r = d.get("result")
+        if isinstance(r, dict) and "value" in r:
+            return _coerce(r["value"])
+        if r is not None:
+            return _coerce(r)
+    return _coerce(d)
+
+
+# Diagnose + apply safe, fully reversible optimizations (TOP node viewers off,
+# oversized self-sized TOPs shrunk to a cap), recording every change to a
+# ``td9981_backup`` store so td_optimize_undo can restore it exactly.
+_OPTIMIZE_SCRIPT = r"""
+def _num(v):
+    try:
+        return float(v or 0.0)
+    except Exception:
+        return 0.0
+_ops = op('/').findChildren(maxDepth=100)
+_rows = []
+for _o in _ops:
+    _r = {'path': _o.path, 'family': getattr(_o, 'family', ''),
+          'type': getattr(_o, 'type', ''),
+          'cook': round(_num(getattr(_o, 'cookTime', 0.0)), 3),
+          'cooks': int(getattr(_o, 'totalCooks', 0) or 0)}
+    try:
+        if _o.family == 'TOP':
+            _r['res'] = [int(_o.width), int(_o.height)]
+    except Exception:
+        pass
+    _rows.append(_r)
+_rows.sort(key=lambda r: r['cook'], reverse=True)
+
+_voff = 0
+_down = []
+_skip = []
+if APPLY_SAFE:
+    _bk = op('/').fetch('td9981_backup', None)
+    if not isinstance(_bk, dict):
+        _bk = {'viewer': [], 'res': {}}
+    _bk.setdefault('viewer', [])
+    _bk.setdefault('res', {})
+    for _o in _ops:
+        try:
+            if _o.family != 'TOP':
+                continue
+            if _o.viewer:
+                _o.viewer = False
+                _bk['viewer'].append(_o.path)
+                _voff += 1
+            _w = int(_o.width); _h = int(_o.height)
+            _ck = _num(getattr(_o, 'cookTime', 0.0))
+            if _w * _h <= CAPW * CAPH:
+                continue
+            _mp = getattr(_o.par, 'resolution', None)
+            _rw = getattr(_o.par, 'resolutionw', None)
+            _rh = getattr(_o.par, 'resolutionh', None)
+            if _mp is None or _rw is None or _rh is None:
+                _skip.append({'path': _o.path, 'why': 'no resolution params',
+                              'res': [_w, _h], 'cook': round(_ck, 3)})
+                continue
+            _mode = str(_mp.eval()).lower()
+            if ('custom' not in _mode) and ('fixed' not in _mode):
+                _skip.append({'path': _o.path,
+                              'why': 'input-sized (' + _mode + ') - left alone',
+                              'res': [_w, _h], 'cook': round(_ck, 3)})
+                continue
+            _f = min(CAPW / float(_w), CAPH / float(_h))
+            _nw = max(2, int(_w * _f)); _nh = max(2, int(_h * _f))
+            if _o.path not in _bk['res']:
+                _bk['res'][_o.path] = {'rw': _rw.eval(), 'rh': _rh.eval()}
+            _rw.val = _nw; _rh.val = _nh
+            _down.append({'path': _o.path, 'frm': [_w, _h], 'to': [_nw, _nh],
+                          'cook': round(_ck, 3)})
+        except Exception:
+            pass
+    op('/').store('td9981_backup', _bk)
+
+try:
+    _fps = _num(getattr(project, 'cookRate', 0.0))
+except Exception:
+    _fps = 0.0
+result = {'fps': _fps, 'count': len(_rows),
+          'total': round(sum(r['cook'] for r in _rows), 3),
+          'top': _rows[:TOPN], 'viewers_off': _voff,
+          'downsized': _down, 'skipped': _skip}
+"""
+
+_UNDO_SCRIPT = r"""
+_bk = op('/').fetch('td9981_backup', None)
+if not isinstance(_bk, dict):
+    _bk = {}
+_von = 0
+for _p in list(_bk.get('viewer', []) or []):
+    _o = op(_p)
+    if not _o:
+        continue
+    try:
+        _o.viewer = True; _von += 1
+    except Exception:
+        pass
+_rres = 0
+for _p, _b in dict(_bk.get('res', {}) or {}).items():
+    _o = op(_p)
+    if not _o:
+        continue
+    try:
+        _o.par.resolutionw.val = _b['rw']; _o.par.resolutionh.val = _b['rh']; _rres += 1
+    except Exception:
+        pass
+try:
+    op('/').unstore('td9981_backup')
+except Exception:
+    pass
+result = {'viewers_on': _von, 'res_restored': _rres}
+"""
+
+
+@mcp.tool()
+def td_optimize(apply: bool = False, top: int = 15, cap: str = "1920x1080") -> str:
+    """Profile the open TouchDesigner project and (optionally) apply safe speedups.
+
+    Talks to the touchdesigner-mcp WebServer (port 9981 by default; set the
+    TD_MCP_URL env var to change it). This is the live-optimization path for
+    projects run with the ``mcp_webserver_base`` .tox.
+
+    With ``apply=False`` (default) it only diagnoses: it ranks the slowest
+    operators and previews what would change. With ``apply=True`` it applies two
+    safe, fully reversible optimizations and records them so td_optimize_undo can
+    restore them exactly:
+
+      1. Turn off TOP node-viewer thumbnails — an editor-only cost; the rendered
+         / performed output is unaffected.
+      2. Shrink oversized TOPs to ``cap`` — but ONLY TOPs that own their
+         resolution (mode custom/fixed). Input-sized TOPs are never touched and
+         are reported for manual review, so the network's sizing logic is kept.
+
+    Tip: let the project run under its slow condition for a few seconds first so
+    cook times reflect the slow moment.
+
+    Args:
+        apply: If true, apply the safe optimizations (default false = diagnose only).
+        top: How many of the slowest operators to list (default 15).
+        cap: Max resolution ``WxH`` for oversized self-sized TOPs (default 1920x1080).
+    """
+    try:
+        cw, ch = (int(x) for x in str(cap).lower().split("x", 1))
+    except Exception:
+        return "cap must be WxH, e.g. 1920x1080."
+    script = ("TOPN = %d\nAPPLY_SAFE = %s\nCAPW = %d\nCAPH = %d\n"
+              % (int(top), bool(apply), cw, ch)) + _OPTIMIZE_SCRIPT
+    res = _tdmcp_exec(script)
+    if not res.get("success", False):
+        err = res.get("error") or (res.get("data") or {}).get("stderr") or "unknown error"
+        return "ERROR:\n" + str(err)
+    v = _tdmcp_result(res)
+    if not isinstance(v, dict):
+        return "Unexpected optimizer output:\n" + str(v)[:2000]
+
+    fps = v.get("fps", 0) or 0
+    budget = (1000.0 / fps) if fps else 0.0
+    lines = [
+        "fps=%g | ops=%d | last-cook total=%.1fms%s"
+        % (fps, v.get("count", 0), v.get("total", 0.0),
+           ("  (budget ~%.1fms/frame)" % budget) if budget else ""),
+    ]
+    if budget and v.get("total", 0) > budget:
+        lines.append(">>> Over frame budget — the operators below are the cause.")
+    lines.append("")
+    lines.append("Slowest operators (last cook, ms):")
+    for r in v.get("top", []):
+        res_s = (" %dx%d" % tuple(r["res"])) if r.get("res") else ""
+        lines.append("  %8.3f  %-40s %-5s cooks=%d%s"
+                     % (r["cook"], r["path"], r["family"], r["cooks"], res_s))
+    lines.append("")
+    if apply:
+        down = v.get("downsized") or []
+        lines.append("Applied (safe, reversible):")
+        lines.append("  - TOP node viewers off: %d (render output unaffected)"
+                     % v.get("viewers_off", 0))
+        lines.append("  - Oversized TOPs shrunk: %d (cap %dx%d, self-sized only)"
+                     % (len(down), cw, ch))
+        for d in down:
+            lines.append("      %-40s %dx%d -> %dx%d  (%.1fms)"
+                         % (d["path"], d["frm"][0], d["frm"][1],
+                            d["to"][0], d["to"][1], d.get("cook", 0.0)))
+        skip = v.get("skipped") or []
+        if skip:
+            lines.append("  Heavy TOPs left alone (manual review):")
+            for s in skip[:10]:
+                lines.append("      %-40s %dx%d  %.1fms  [%s]"
+                             % (s["path"], s["res"][0], s["res"][1],
+                                s.get("cook", 0.0), s.get("why", "")))
+        lines.append("  Revert everything with the td_optimize_undo tool.")
+    else:
+        lines.append("Diagnose only — call again with apply=True to turn off TOP "
+                     "viewers and shrink oversized TOPs (both reversible via "
+                     "td_optimize_undo).")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def td_optimize_undo() -> str:
+    """Revert everything a previous ``td_optimize(apply=True)`` changed.
+
+    Restores TOP node viewers and the original resolutions from the
+    ``td9981_backup`` store in the open project, then clears the store. Talks to
+    the touchdesigner-mcp WebServer (port 9981 by default; set TD_MCP_URL).
+    """
+    res = _tdmcp_exec(_UNDO_SCRIPT)
+    if not res.get("success", False):
+        err = res.get("error") or (res.get("data") or {}).get("stderr") or "unknown error"
+        return "ERROR:\n" + str(err)
+    v = _tdmcp_result(res)
+    if not isinstance(v, dict):
+        return "Unexpected undo output:\n" + str(v)[:2000]
+    return ("Reverted: %d TOP viewer(s) turned back on, %d resolution(s) restored."
+            % (v.get("viewers_on", 0), v.get("res_restored", 0)))
 
 
 def main() -> None:
