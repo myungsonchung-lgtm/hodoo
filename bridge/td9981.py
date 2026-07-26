@@ -121,7 +121,19 @@ def exec_td(base: str, script: str, timeout: float = 30.0) -> dict:
 
 
 def _result_value(res: dict):
-    return ((res.get("data") or {}).get("result") or {}).get("value")
+    """Return the script's `result`, tolerant of response nesting differences.
+
+    Different touchdesigner-mcp builds return the value at data.result.value,
+    data.result, or data directly. Try each.
+    """
+    d = res.get("data")
+    if isinstance(d, dict):
+        r = d.get("result")
+        if isinstance(r, dict) and "value" in r:
+            return r["value"]
+        if r is not None:
+            return r
+    return d
 
 
 def _print_exec(res: dict) -> int:
