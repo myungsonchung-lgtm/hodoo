@@ -7,6 +7,7 @@
 #   python tdspeed.py "op('/x').par.a=1"   -> 따옴표 안 파이썬을 TD에서 즉시 실행 (수정 적용)
 # TD 가 열려 있고 mcp_webserver_base(.tox) 가 /project1 에서 돌아야 합니다.
 # --------------------------------------------------------------------------
+import ast
 import json
 import sys
 import urllib.error
@@ -49,6 +50,24 @@ result = {'fps': _fp, 'n': len(_r), 'tot': round(sum(z['c'] for z in _r), 3),
 """
 
 
+def coerce(x):
+    """Some MCP builds return dicts/lists as JSON or Python-repr strings."""
+    if isinstance(x, str):
+        for parse in (json.loads, ast.literal_eval):
+            try:
+                return parse(x)
+            except Exception:
+                pass
+    return x
+
+
+def num(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
 def call(script):
     body = json.dumps({"script": script}).encode("utf-8")
     req = urllib.request.Request(URL, data=body,
@@ -62,8 +81,7 @@ def call(script):
             "도는지 확인하세요." % e)
 
 
-def _find(res, key):
-    """Locate the returned dict regardless of response nesting."""
+def find_report(res):
     d = res.get("data")
     cands = [d]
     if isinstance(d, dict):
@@ -71,28 +89,19 @@ def _find(res, key):
         if isinstance(d.get("result"), dict):
             cands.append(d["result"].get("value"))
     for c in cands:
-        if isinstance(c, str):
-            try:
-                c = json.loads(c)
-            except Exception:
-                continue
-        if isinstance(c, dict) and key in c:
+        c = coerce(c)
+        if isinstance(c, dict) and "fps" in c:
             return c
     return None
 
 
-def _stdout(res):
-    d = res.get("data")
-    return d.get("stdout") if isinstance(d, dict) else None
-
-
 def fix(script):
     res = call(script)
-    out = _stdout(res)
-    if out:
-        print(out.rstrip())
+    d = res.get("data")
+    if isinstance(d, dict) and d.get("stdout"):
+        print(str(d["stdout"]).rstrip())
     if not res.get("success", True):
-        print("오류:", json.dumps(res.get("error") or res, ensure_ascii=False)[:800], file=sys.stderr)
+        print("오류:", json.dumps(res, ensure_ascii=False)[:800], file=sys.stderr)
         return 1
     print("적용 완료.")
     return 0
@@ -100,36 +109,46 @@ def fix(script):
 
 def diagnose():
     res = call(PROFILE)
-    v = _find(res, "fps")
+    v = find_report(res)
     if v is None:
         print("결과 구조를 못 찾음. 아래 원본 응답을 복사해서 알려주세요:")
         print(json.dumps(res, ensure_ascii=False)[:2000])
         return 1
-    fps = v.get("fps") or 0
+    fps = num(v.get("fps"))
     budget = 1000.0 / fps if fps else 0.0
+    top = coerce(v.get("top")) or []
     print("=" * 60)
-    print("fps=%g  ops=%d  cook합=%.1fms  (프레임 예산 ~%.1fms)" % (fps, v["n"], v["tot"], budget))
-    if budget and v["tot"] > budget:
+    print("fps=%g  ops=%s  cook합=%.1fms  (프레임 예산 ~%.1fms)"
+          % (fps, v.get("n"), num(v.get("tot")), budget))
+    if budget and num(v.get("tot")) > budget:
         print(">>> 프레임 예산 초과 — 아래 상위 노드가 원인입니다.")
     print("-" * 60)
     print("가장 느린 오퍼레이터 (ms):")
-    for x in v["top"]:
-        rs = ("  %dx%d" % (x["w"], x["h"])) if "w" in x else ""
-        print("  %8.3f  %-38s %-4s cooks=%d%s" % (x["c"], x["p"], x["f"], x.get("k", 0), rs))
+    for x in top:
+        x = coerce(x)
+        if not isinstance(x, dict):
+            continue
+        rs = ("  %sx%s" % (x.get("w"), x.get("h"))) if "w" in x else ""
+        print("  %8.3f  %-38s %-4s cooks=%s%s"
+              % (num(x.get("c")), x.get("p"), x.get("f"), x.get("k", 0), rs))
     print("-" * 60)
-    print("안전 최적화 적용: TOP 노드 뷰어 %d개 끔 (송출 화면 영향 없음)." % v["off"])
+    print("안전 최적화 적용: TOP 노드 뷰어 %s개 끔 (송출 화면 영향 없음)." % v.get("off"))
     print("  되돌리기: python tdspeed.py \"[setattr(o,'viewer',True) for o in op('/').findChildren(type=TOP)]\"")
     tips = []
-    for x in v["top"][:6]:
-        if "w" in x and x["w"] * x["h"] > 1280 * 720:
+    for x in top[:6]:
+        x = coerce(x)
+        if not isinstance(x, dict):
+            continue
+        if "w" in x and num(x["w"]) * num(x["h"]) > 1280 * 720:
             tips.append(
-                "# %s (%dx%d, %.1fms) 해상도 절반으로 (해당 TOP이 자체 해상도일 때):\n"
+                "# %s (%sx%s, %.1fms) 해상도 절반으로 (해당 TOP이 자체 해상도일 때):\n"
                 "python tdspeed.py \"o=op('%s'); o.par.resolutionw=%d; o.par.resolutionh=%d\""
-                % (x["p"], x["w"], x["h"], x["c"], x["p"], max(2, x["w"] // 2), max(2, x["h"] // 2)))
-        if x["f"] in ("DAT", "CHOP") and budget and x["c"] > budget * 0.25:
+                % (x["p"], x["w"], x["h"], num(x["c"]), x["p"],
+                   int(num(x["w"])) // 2, int(num(x["h"])) // 2))
+        if x.get("f") in ("DAT", "CHOP") and budget and num(x.get("c")) > budget * 0.25:
             tips.append(
                 "# %s (%s, %.1fms) 매 프레임 무거움 — 비용 확인용 bypass:\n"
-                "python tdspeed.py \"op('%s').bypass=True\"" % (x["p"], x["t"], x["c"], x["p"]))
+                "python tdspeed.py \"op('%s').bypass=True\"" % (x["p"], x.get("t"), num(x["c"]), x["p"]))
     if tips:
         print("-" * 60)
         print("추천 수정 명령 (내용 확인 후 실행):")
