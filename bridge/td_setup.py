@@ -37,6 +37,16 @@ def _seed_ns():
     if _NS.get('_seeded'):
         return
     _NS['__builtins__'] = __builtins__
+    # Pull in everything TouchDesigner exposes (op, root, and every operator
+    # type token such as boxSOP / textDAT / moviefileinTOP), same as a DAT sees.
+    try:
+        import td as _td
+        for _k in dir(_td):
+            if not _k.startswith('__'):
+                _NS[_k] = getattr(_td, _k)
+    except Exception:
+        pass
+    # Refine with context-sensitive globals available in this callback scope.
     for _name in ('op', 'ops', 'root', 'me', 'parent', 'var', 'mod', 'iop',
                   'ipar', 'tdu', 'TDF', 'project', 'ui', 'absTime', 'run'):
         try:

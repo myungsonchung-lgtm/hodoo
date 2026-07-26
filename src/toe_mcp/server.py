@@ -15,10 +15,13 @@ All tools operate on files on the local machine where this server runs.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -392,6 +395,124 @@ def search_toe(toe_path: str, pattern: str, max_results: int = 100) -> str:
     if not results:
         return f"No matches for {pattern!r}."
     return f"{len(results)} match(es):\n" + "\n".join(results)
+
+
+# ---------------------------------------------------------------------------
+# Live control of a RUNNING TouchDesigner (via the bridge/td_setup.py bridge)
+# ---------------------------------------------------------------------------
+# These tools talk to the Web Server DAT installed by bridge/td_setup.py, so
+# they control the project that is *currently open* in TouchDesigner in real
+# time. This is different from the .toe file tools above, which edit a saved
+# file on disk. Requires TouchDesigner to be open with the bridge running.
+_BRIDGE_TIMEOUT = 30.0
+
+
+def _bridge_url() -> str:
+    return os.environ.get("TD_BRIDGE_URL", "http://127.0.0.1:9980").rstrip("/")
+
+
+def _bridge_token() -> str:
+    return os.environ.get("TD_BRIDGE_TOKEN", "")
+
+
+def _bridge_post(path: str, payload: dict | None) -> dict:
+    data = json.dumps(payload or {}).encode("utf-8")
+    req = urllib.request.Request(
+        _bridge_url() + path,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_BRIDGE_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Cannot reach the TouchDesigner bridge at {_bridge_url()} ({e}). "
+            f"Open TouchDesigner and run bridge/td_setup.py in it first "
+            f"(or set TD_BRIDGE_URL)."
+        )
+
+
+def _fmt_live(res: dict) -> str:
+    parts: list[str] = []
+    out = (res.get("stdout") or "").rstrip("\n")
+    if out:
+        parts.append(out)
+    if not res.get("ok", False):
+        parts.append("ERROR:\n" + (res.get("error") or "unknown error").rstrip("\n"))
+    else:
+        val = res.get("value")
+        if val is not None:  # None == statement / no return value
+            parts.append(val)
+    return "\n".join(parts) if parts else "(ok, no output)"
+
+
+@mcp.tool()
+def td_ping() -> str:
+    """Check whether a live TouchDesigner project is reachable.
+
+    Returns 'connected' if the running TouchDesigner has the bridge active,
+    otherwise an error explaining how to start it. Call this before using the
+    other td_* live tools if you are unsure.
+    """
+    try:
+        res = _bridge_post("/ping", None)
+    except RuntimeError as e:
+        return str(e)
+    return f"connected to {_bridge_url()}" if res.get("ok") else f"unexpected reply: {res}"
+
+
+@mcp.tool()
+def td_exec(code: str) -> str:
+    """Run Python inside the CURRENTLY OPEN TouchDesigner project (real time).
+
+    Use this to control the live project: create/delete operators, change
+    parameters, read state, run scripts. Changes take effect immediately in the
+    open project. This does NOT touch any .toe file on disk (use the expand/
+    collapse tools for saved files). Full TouchDesigner Python is available
+    (``op``, ``root``, ``ops``, ``ui``, ``project``, operator classes, etc.).
+
+    A single expression returns its value; multiple statements run as a block
+    and any ``print`` output is captured.
+
+    Examples:
+        op('/project1').children              -> list child operators
+        op('/project1/moviefilein1').par.file = 'D:/clips/a.mov'
+        op('/project1').create(boxSOP, 'box1')
+
+    Args:
+        code: Python source to execute in TouchDesigner.
+    """
+    return _fmt_live(_bridge_post("/exec", {"code": code, "token": _bridge_token()}))
+
+
+@mcp.tool()
+def td_ls(path: str = "/") -> str:
+    """List the child operators of an operator in the running TouchDesigner.
+
+    Args:
+        path: Operator path to list children of (default '/', the root).
+    """
+    code = (
+        "(lambda _o: sorted(c.path for c in _o.children) if _o "
+        "else 'no such op: %s')(op(%r))" % (path, path)
+    )
+    return _fmt_live(_bridge_post("/exec", {"code": code, "token": _bridge_token()}))
+
+
+@mcp.tool()
+def td_pars(path: str) -> str:
+    """List an operator's parameters and their current values (running TD).
+
+    Args:
+        path: Operator path whose parameters to read.
+    """
+    code = (
+        "(lambda _o: {p.name: p.val for p in _o.pars()} if _o "
+        "else 'no such op: %s')(op(%r))" % (path, path)
+    )
+    return _fmt_live(_bridge_post("/exec", {"code": code, "token": _bridge_token()}))
 
 
 def main() -> None:

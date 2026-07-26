@@ -50,6 +50,50 @@ python toe_ctl.py "op('/project1').par.something = 5"
 
 `toe_ctl.py`는 표준 라이브러리만 쓰므로 별도 설치가 필요 없습니다.
 
+## 자연어(프롬프트)로 실시간 제어하기 ⭐
+
+터미널에 파이썬을 직접 치는 대신, **Claude에게 자연어로 말해서** 지금 열려 있는 TD를
+실시간 제어할 수 있습니다. 이때는 아래 MCP 서버(②)가 브릿지에 명령을 전달합니다.
+
+준비물 두 가지:
+
+1. **TD 안에 브릿지 실행** — 위 "빠른 시작 1단계"대로 `td_setup.py`를 실행해 둡니다.
+2. **Claude Desktop에 MCP 서버 등록** — 아래 "② 파일 편집 MCP" 설치 후, 설정에
+   실시간 제어용 도구가 함께 들어옵니다. `claude_desktop_config.json`:
+
+   ```jsonc
+   {
+     "mcpServers": {
+       "toe": {
+         "command": "toe-mcp",
+         "env": {
+           "TD_BIN": "C:\\Program Files\\Derivative\\TouchDesigner\\bin",
+           "TD_BRIDGE_URL": "http://127.0.0.1:9980"
+         }
+       }
+     }
+   }
+   ```
+
+그러면 Claude에게 이렇게 말하면 됩니다:
+
+> 지금 열려 있는 TD의 `/project1` 안에 노드 뭐가 있는지 보여줘.
+> `moviefilein1`의 파일 경로를 `D:/clips/new.mov`로 바꿔줘.
+> `/project1` 안에 box SOP 하나 만들어줘.
+
+내부적으로 Claude가 이 MCP 도구를 호출합니다:
+
+| 도구 | 하는 일 |
+| --- | --- |
+| `td_ping` | 열린 TD에 연결되는지 확인 |
+| `td_exec` | 임의의 파이썬을 열린 TD에서 즉시 실행 (노드 생성·삭제, 파라미터 변경 등) |
+| `td_ls` | 특정 op의 자식 노드 목록 |
+| `td_pars` | 특정 op의 파라미터와 현재 값 |
+
+> 즉, "지금 TD를 프롬프트로 제어" = **브릿지(TD 안) + MCP 서버(Claude 쪽)** 둘 다
+> 준비되면 됩니다. 브릿지만 있으면 터미널 `toe_ctl.py`로, 여기에 MCP까지 붙이면
+> 자연어로 제어할 수 있습니다.
+
 ## REPL 예시
 
 ```
