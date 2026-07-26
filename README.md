@@ -1,8 +1,111 @@
-# toe-mcp
+# toe-mcp / toe bridge
+
+TouchDesigner를 파이썬으로 제어하기 위한 두 가지 도구입니다. 상황에 맞게 고르세요.
+
+| 방식 | 언제 | 실시간? | 폴더 |
+| --- | --- | --- | --- |
+| **① 실시간 제어 브릿지** | 지금 **열려 있는** 프로젝트를 터미널에서 즉시 조종 | ✅ | [`bridge/`](bridge/) |
+| **② 파일 편집 MCP** | **저장된** `.toe` 파일 내용을 열어보고 수정 | ❌ | [`src/`](src/) |
+
+---
+
+# ① 실시간 제어 브릿지 (권장)
+
+지금 TouchDesigner에서 열려 있는 프로젝트(예: `Desktop/show/urbanbreak.space.toe`)를
+**터미널의 파이썬으로 실시간 조종**합니다. TouchDesigner 안에 작은 HTTP 서버
+(Web Server DAT)를 띄우고, 터미널의 `toe_ctl.py`가 파이썬 코드를 보내면 TD가 그 자리에서
+실행하고 결과를 돌려줍니다. 노드 추가/삭제, 파라미터 변경, 스크립트 실행이 즉시 반영됩니다.
+
+```
+터미널 (toe_ctl.py)  ──HTTP──►  TouchDesigner (Web Server DAT)  ──►  op(...) 실행
+                     ◄───────                                  ◄──  결과/출력
+```
+
+## 빠른 시작
+
+**1단계 — TouchDesigner 안에 브릿지 설치 (한 번만)**
+
+`urbanbreak.space.toe`가 열린 상태에서:
+
+- `Alt`+`T`로 **Textport**를 열고, [`bridge/td_setup.py`](bridge/td_setup.py) 내용을 통째로
+  붙여넣고 Enter. (또는 Text DAT를 만들어 붙여넣고 노드 우클릭 → **Run Script**)
+
+성공하면 루트에 `td_bridge_server`(포트 9980)와 `td_bridge_callbacks` 두 노드가 생기고,
+Textport에 `TD bridge ready.`가 찍힙니다.
+
+> 이 노드들을 프로젝트에 저장해두면 다음에 열 때 자동으로 다시 뜹니다.
+
+**2단계 — 터미널에서 제어**
+
+이 저장소의 `bridge/` 폴더에서:
+
+```bash
+# 대화형 모드 (REPL)
+python toe_ctl.py
+
+# 한 줄 실행
+python toe_ctl.py "op('/').name"
+python toe_ctl.py "op('/project1').par.something = 5"
+```
+
+`toe_ctl.py`는 표준 라이브러리만 쓰므로 별도 설치가 필요 없습니다.
+
+## REPL 예시
+
+```
+$ python toe_ctl.py
+toe_ctl -> http://127.0.0.1:9980  [connected]
+Type Python to run it in TouchDesigner. .help for commands, Ctrl-D to quit.
+td> .ls /                         # 최상위 노드 목록
+['/perform', '/project1', '/local', ...]
+td> .ls /project1                 # project1 안의 노드들
+td> .pars /project1/moviefilein1  # 파라미터와 현재 값
+{'file': 'clip.mov', 'play': 1, ...}
+td> op('/project1/moviefilein1').par.file = 'D:/clips/new.mov'   # 값 변경 (즉시 반영)
+td> op('/project1').create(boxSOP, 'newbox')                     # 노드 생성
+td> for o in op('/project1').children:      # 여러 줄 입력: 빈 줄로 끝냄
+...     print(o.name, o.type)
+...
+```
+
+멀티라인은 `:`로 끝나는 줄을 입력하면 자동으로 블록 모드가 되고, 빈 줄을 넣으면 실행됩니다.
+
+## REPL 명령어
+
+| 명령 | 설명 |
+| --- | --- |
+| `.ping` | 연결 확인 |
+| `.ls [경로]` | 해당 op의 자식 노드 목록 (기본 `/`) |
+| `.pars <경로>` | op의 파라미터와 현재 값 |
+| `.file <경로>` | 로컬 `.py` 파일을 TD 안에서 실행 |
+| `.help` | 도움말 |
+| `.quit` / `Ctrl-D` | 종료 |
+
+## 옵션
+
+```bash
+python toe_ctl.py --port 9980            # 포트 지정 (기본 9980)
+python toe_ctl.py --url http://192.168.0.10:9980   # 다른 PC의 TD 제어
+python toe_ctl.py --file scene_setup.py  # 로컬 .py를 TD에서 실행하고 종료
+python toe_ctl.py --token 비밀값          # 브릿지에 토큰을 설정한 경우
+```
+
+## 보안 주의
+
+이 브릿지는 받은 파이썬 코드를 TouchDesigner 안에서 **그대로 실행**합니다. 기본값은
+로컬 접속(`127.0.0.1`)만 쓰는 것을 전제로 합니다. 공유 네트워크에서 쓰거나 다른 PC에서
+접속해야 한다면, `bridge/td_setup.py`의 `CALLBACKS_SRC` 안 `TOKEN = ''`에 비밀값을 넣고
+(다시 Run), 클라이언트에서 `--token 비밀값`(또는 환경변수 `TD_BRIDGE_TOKEN`)으로 맞춰
+주세요.
+
+---
+
+# ② 파일 편집 MCP
 
 TouchDesigner `.toe` 파일을 **직접 읽고 쓰는** MCP(Model Context Protocol) 서버입니다.
 Claude Desktop, Claude Code 등 MCP를 지원하는 클라이언트에 연결해서, AI가 내 PC의
 `.toe` 파일 내용을 열어보고 수정한 뒤 다시 저장하도록 할 수 있습니다.
+(실시간이 아니라, 저장된 파일을 대상으로 하며 TD에서 파일을 닫고/다시 열어야 반영됩니다.)
 
 ## 어떻게 동작하나요?
 
