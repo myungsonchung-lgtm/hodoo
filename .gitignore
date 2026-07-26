@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# TouchDesigner expanded projects / backups
+*.toe.dir/
+*.dir/
+Backup/
+*.toe.bak
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
