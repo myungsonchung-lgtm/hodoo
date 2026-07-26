@@ -161,6 +161,30 @@ slowest (ms):
 이 표는 일반 원칙이고, 실제 수정은 `.perf` 결과를 보고 **당신 프로젝트에 맞게**
 `td_exec`로 바로 적용할 수 있습니다 (예: 특정 TOP 해상도 절반으로, Cook Type 변경 등).
 
+### touchdesigner-mcp (포트 9981)로 자동 최적화
+
+[`touchdesigner-mcp`](https://github.com/8beeeaaat/touchdesigner-mcp)의 `.tox`를
+쓰는 경우, 포트는 **9981**입니다. 이 저장소의 [`bridge/td9981.py`](bridge/td9981.py)로
+진단부터 **안전·되돌리기 가능한 자동 최적화**까지 한 번에 할 수 있습니다.
+
+```bash
+python bridge/td9981.py perf                 # 진단만 (느린 노드 순위)
+python bridge/td9981.py optimize             # 진단 + 어떤 최적화를 할지 미리보기
+python bridge/td9981.py optimize --apply     # 안전 최적화 적용
+python bridge/td9981.py optimize --apply --cap 1280x720   # 해상도 상한 지정
+python bridge/td9981.py undo                 # 위에서 바꾼 것 전부 원복
+```
+
+`--apply`가 적용하는 것(둘 다 `undo`로 정확히 복구):
+
+- **TOP 노드 뷰어 끄기** — 편집기 썸네일 렌더 비용만 줄이고, 송출/렌더 결과에는 영향 없음.
+- **과대 TOP 해상도 축소** — 상한(기본 `1920x1080`)을 넘는 TOP만, 그것도 **자체 해상도
+  (custom/fixed) 노드만** 비율을 유지해 축소합니다. 입력에서 크기를 받는 TOP은 네트워크
+  로직이 깨지지 않도록 **건드리지 않고** 수동 확인 목록으로만 보여줍니다.
+
+> 되돌리기 정보는 프로젝트 루트에 `td9981_backup`으로 저장되므로, `--apply` 후 세션이
+> 이어지는 동안 `undo`로 원래 값까지 정확히 복구됩니다.
+
 ## 옵션
 
 ```bash

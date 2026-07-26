@@ -13,6 +13,10 @@ Examples
     python td9981.py health                 # is the in-TD server up?
     python td9981.py perf                    # rank the slowest operators
     python td9981.py perf 30
+    python td9981.py optimize                # diagnose (no changes)
+    python td9981.py optimize --apply        # apply safe, reversible speedups
+    python td9981.py optimize --apply --cap 1280x720
+    python td9981.py undo                     # revert what --apply changed
     python td9981.py ls /project1            # list child operators
     python td9981.py exec "op('/project1').par"    # run any Python
     python td9981.py --url http://127.0.0.1:9981 perf
@@ -60,8 +64,14 @@ result = {'fps': _fps, 'count': len(_rows),
 
 LS_SCRIPT = "result = (lambda _o: sorted(c.path for c in _o.children) if _o else 'no such op')(op(%r))"
 
-# Diagnose + apply the one safe/reversible optimization (turn off TOP node-viewer
-# thumbnails; editor-only cost, rendered output unaffected) and return a report.
+# Diagnose + apply safe, fully reversible optimizations, then return a report.
+# Two things are applied when APPLY_SAFE is set, both recorded to a backup store
+# so `undo` can restore them exactly:
+#   1) TOP node-viewer thumbnails off  — editor-only cost, rendered output is
+#      unaffected.
+#   2) Oversized TOPs shrunk to a resolution cap — ONLY TOPs that own their
+#      resolution (mode custom/fixed); input-sized TOPs are never touched, so
+#      the network's sizing logic is preserved.
 OPTIMIZE_SCRIPT = r"""
 def _num(v):
     try:
@@ -82,22 +92,92 @@ for _o in _ops:
         pass
     _rows.append(_r)
 _rows.sort(key=lambda r: r['cook'], reverse=True)
+
 _voff = 0
+_down = []      # oversized TOPs whose resolution we shrank
+_skip = []      # heavy TOPs left alone (needs a human) + why
 if APPLY_SAFE:
+    _bk = op('/').fetch('td9981_backup', None)
+    if not isinstance(_bk, dict):
+        _bk = {'viewer': [], 'res': {}}
+    _bk.setdefault('viewer', [])
+    _bk.setdefault('res', {})
     for _o in _ops:
         try:
-            if _o.family == 'TOP' and _o.viewer:
+            if _o.family != 'TOP':
+                continue
+            # (1) node-viewer thumbnail: pure editor cost, output unaffected
+            if _o.viewer:
                 _o.viewer = False
+                _bk['viewer'].append(_o.path)
                 _voff += 1
+            # (2) shrink oversized self-sized TOPs to the cap
+            _w = int(_o.width); _h = int(_o.height)
+            _ck = _num(getattr(_o, 'cookTime', 0.0))
+            if _w * _h <= CAPW * CAPH:
+                continue
+            _mp = getattr(_o.par, 'resolution', None)
+            _rw = getattr(_o.par, 'resolutionw', None)
+            _rh = getattr(_o.par, 'resolutionh', None)
+            if _mp is None or _rw is None or _rh is None:
+                _skip.append({'path': _o.path, 'why': '해상도 파라미터 없음',
+                              'res': [_w, _h], 'cook': round(_ck, 3)})
+                continue
+            _mode = str(_mp.eval()).lower()
+            if ('custom' not in _mode) and ('fixed' not in _mode):
+                _skip.append({'path': _o.path,
+                              'why': '입력에서 크기 받음(' + _mode + ') - 안전상 유지',
+                              'res': [_w, _h], 'cook': round(_ck, 3)})
+                continue
+            _f = min(CAPW / float(_w), CAPH / float(_h))
+            _nw = max(2, int(_w * _f)); _nh = max(2, int(_h * _f))
+            if _o.path not in _bk['res']:
+                _bk['res'][_o.path] = {'rw': _rw.eval(), 'rh': _rh.eval()}
+            _rw.val = _nw; _rh.val = _nh
+            _down.append({'path': _o.path, 'frm': [_w, _h], 'to': [_nw, _nh],
+                          'cook': round(_ck, 3)})
         except Exception:
             pass
+    op('/').store('td9981_backup', _bk)
+
 try:
     _fps = _num(getattr(project, 'cookRate', 0.0))
 except Exception:
     _fps = 0.0
 result = {'fps': _fps, 'count': len(_rows),
           'total': round(sum(r['cook'] for r in _rows), 3),
-          'top': _rows[:TOPN], 'viewers_off': _voff}
+          'top': _rows[:TOPN], 'viewers_off': _voff,
+          'downsized': _down, 'skipped': _skip}
+"""
+
+# Restore everything a previous `optimize --apply` changed, from the backup store.
+UNDO_SCRIPT = r"""
+_bk = op('/').fetch('td9981_backup', None)
+if not isinstance(_bk, dict):
+    _bk = {}
+_von = 0
+for _p in list(_bk.get('viewer', []) or []):
+    _o = op(_p)
+    if not _o:
+        continue
+    try:
+        _o.viewer = True; _von += 1
+    except Exception:
+        pass
+_rres = 0
+for _p, _b in dict(_bk.get('res', {}) or {}).items():
+    _o = op(_p)
+    if not _o:
+        continue
+    try:
+        _o.par.resolutionw.val = _b['rw']; _o.par.resolutionh.val = _b['rh']; _rres += 1
+    except Exception:
+        pass
+try:
+    op('/').unstore('td9981_backup')
+except Exception:
+    pass
+result = {'viewers_on': _von, 'res_restored': _rres}
 """
 
 
@@ -195,8 +275,9 @@ def _suggest(rows: list, budget: float) -> list:
     return tips
 
 
-def cmd_optimize(base: str, topn: int, apply_safe: bool) -> int:
-    script = ("TOPN = %d\nAPPLY_SAFE = %s\n" % (topn, bool(apply_safe))) + OPTIMIZE_SCRIPT
+def cmd_optimize(base: str, topn: int, apply_safe: bool, capw: int, caph: int) -> int:
+    script = ("TOPN = %d\nAPPLY_SAFE = %s\nCAPW = %d\nCAPH = %d\n"
+              % (topn, bool(apply_safe), capw, caph)) + OPTIMIZE_SCRIPT
     res = exec_td(base, script)
     if not res.get("success", False):
         print("ERROR:", res.get("error") or (res.get("data") or {}).get("stderr"), file=sys.stderr)
@@ -217,10 +298,24 @@ def cmd_optimize(base: str, topn: int, apply_safe: bool) -> int:
               % (r["cook"], r["path"], r["family"], r["cooks"], res_s))
     print("-" * 66)
     if apply_safe:
-        print("적용됨(안전): TOP 노드 뷰어 %d개 끔 (렌더 출력 영향 없음)." % v.get("viewers_off", 0))
-        print("  되돌리기: python td9981.py exec \"[setattr(o,'viewer',True) for o in op('/').findChildren(type=TOP)]\"")
+        down = v.get("downsized") or []
+        print("적용됨(안전):")
+        print("  · TOP 노드 뷰어 %d개 끔 (렌더 출력 영향 없음)." % v.get("viewers_off", 0))
+        print("  · 과대 TOP 해상도 %d개 축소 (cap %dx%d, 자체 해상도 노드만)."
+              % (len(down), capw, caph))
+        for d in down:
+            print("      %-42s %dx%d -> %dx%d  (%.1fms)"
+                  % (d["path"], d["frm"][0], d["frm"][1], d["to"][0], d["to"][1], d.get("cook", 0.0)))
+        skip = v.get("skipped") or []
+        if skip:
+            print("  안전상 건드리지 않은 무거운 TOP (수동 확인):")
+            for s in skip[:10]:
+                print("      %-42s %dx%d  %.1fms  [%s]"
+                      % (s["path"], s["res"][0], s["res"][1], s.get("cook", 0.0), s.get("why", "")))
+        print("  전체 되돌리기: python td9981.py undo")
     else:
-        print("안전 최적화 미적용 (--apply 를 붙이면 TOP 뷰어를 꺼서 편집/렌더 부하를 줄입니다).")
+        print("안전 최적화 미적용 — --apply 를 붙이면 TOP 뷰어 끄기 + 과대 TOP 해상도 축소를 "
+              "한 번에 적용합니다 (모두 undo 로 복구 가능).")
     tips = _suggest(v.get("top", []), budget)
     if tips:
         print("-" * 66)
@@ -228,6 +323,17 @@ def cmd_optimize(base: str, topn: int, apply_safe: bool) -> int:
         for t in tips:
             print(t)
     print("=" * 66)
+    return 0
+
+
+def cmd_undo(base: str) -> int:
+    res = exec_td(base, UNDO_SCRIPT)
+    if not res.get("success", False):
+        print("ERROR:", res.get("error") or (res.get("data") or {}).get("stderr"), file=sys.stderr)
+        return 1
+    v = _result_value(res) or {}
+    print("되돌리기 완료: TOP 뷰어 %d개 다시 켬, 해상도 %d개 원복."
+          % (v.get("viewers_on", 0), v.get("res_restored", 0)))
     return 0
 
 
@@ -244,7 +350,11 @@ def main(argv=None) -> int:
     p_exec.add_argument("script")
     p_opt = sub.add_parser("optimize")
     p_opt.add_argument("top", nargs="?", type=int, default=15)
-    p_opt.add_argument("--apply", action="store_true", help="apply safe fixes (TOP viewers off)")
+    p_opt.add_argument("--apply", action="store_true",
+                       help="apply safe fixes: TOP viewers off + shrink oversized TOPs (reversible)")
+    p_opt.add_argument("--cap", default="1920x1080",
+                       help="max resolution for oversized self-sized TOPs (default 1920x1080)")
+    sub.add_parser("undo")
     args = ap.parse_args(argv)
 
     if args.cmd == "health":
@@ -259,7 +369,14 @@ def main(argv=None) -> int:
     if args.cmd == "exec":
         return _print_exec(exec_td(args.url, args.script))
     if args.cmd == "optimize":
-        return cmd_optimize(args.url, args.top, args.apply)
+        try:
+            _cw, _ch = (int(x) for x in str(args.cap).lower().split("x", 1))
+        except Exception:
+            print("ERROR: --cap 형식은 WxH 입니다 (예: 1920x1080).", file=sys.stderr)
+            return 2
+        return cmd_optimize(args.url, args.top, args.apply, _cw, _ch)
+    if args.cmd == "undo":
+        return cmd_undo(args.url)
     return 2
 
 
