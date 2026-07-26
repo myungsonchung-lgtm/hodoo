@@ -89,6 +89,7 @@ python toe_ctl.py "op('/project1').par.something = 5"
 | `td_exec` | 임의의 파이썬을 열린 TD에서 즉시 실행 (노드 생성·삭제, 파라미터 변경 등) |
 | `td_ls` | 특정 op의 자식 노드 목록 |
 | `td_pars` | 특정 op의 파라미터와 현재 값 |
+| `td_perf` | 느린 오퍼레이터를 cook time 순으로 분석 (성능 진단) |
 
 > 즉, "지금 TD를 프롬프트로 제어" = **브릿지(TD 안) + MCP 서버(Claude 쪽)** 둘 다
 > 준비되면 됩니다. 브릿지만 있으면 터미널 `toe_ctl.py`로, 여기에 MCP까지 붙이면
@@ -121,9 +122,44 @@ td> for o in op('/project1').children:      # 여러 줄 입력: 빈 줄로 끝�
 | `.ping` | 연결 확인 |
 | `.ls [경로]` | 해당 op의 자식 노드 목록 (기본 `/`) |
 | `.pars <경로>` | op의 파라미터와 현재 값 |
+| `.perf [N]` | **느린 오퍼레이터 상위 N개**를 cook time 순으로 (기본 20) |
 | `.file <경로>` | 로컬 `.py` 파일을 TD 안에서 실행 |
 | `.help` | 도움말 |
 | `.quit` / `Ctrl-D` | 종료 |
+
+## 속도(성능) 개선
+
+프로젝트가 느릴 때는 **"어디가 느린지 먼저 측정"** 하세요. 프로파일러가 모든
+오퍼레이터의 마지막 cook time을 읽어 느린 순으로 보여줍니다.
+
+- 터미널: `td> .perf` (또는 `.perf 30`)
+- Claude 프롬프트: *"지금 TD가 왜 느린지 분석해줘"* → `td_perf` 도구 호출
+
+```
+$ python toe_ctl.py
+td> .perf
+fps=60  ops=842  last-cook total=23.1ms      # 60fps 예산은 ~16.7ms/프레임
+slowest (ms):
+    12.500  /project1/blur1        TOP   cooks=9000 3840x2160   # ← 범인
+     6.200  /project1/script1      DAT   cooks=9000
+```
+
+> **먼저 느린 상태로 몇 초 돌린 뒤** 측정하세요. cook time은 "마지막 cook" 값이라,
+> 느린 순간에 측정해야 병목이 제대로 잡힙니다.
+
+측정 결과를 저에게 알려주시면 그 지점만 골라 고쳐 드립니다. TouchDesigner에서 흔한
+속도 병목과 대응:
+
+| 증상 | 원인 | 대응 |
+| --- | --- | --- |
+| 특정 TOP이 느림 | 해상도가 큼 (4K 등) | 해상도 낮추기, 필요한 곳만 고해상도, Resolution TOP로 축소 |
+| 매 프레임 cook | 안 바뀌는데 계속 cook | 해당 op의 **Cook Type = Selective**, 안 쓰는 노드는 연결 끊기 |
+| DAT/CHOP가 느림 | 매 프레임 파이썬 실행 | 이벤트 기반으로 바꾸기, 결과 캐싱, `me.time` 의존 줄이기 |
+| 전체적으로 무거움 | 안 보이는 노드도 cook | 안 쓰는 네트워크 **Bypass**, 프리뷰 끄기, `project.cookRate` 확인 |
+| GPU 메모리 부족 | TOP 해상도·개수 과다 | 불필요한 TOP 정리, 8-bit로 낮추기, Null로 캐시 |
+
+이 표는 일반 원칙이고, 실제 수정은 `.perf` 결과를 보고 **당신 프로젝트에 맞게**
+`td_exec`로 바로 적용할 수 있습니다 (예: 특정 TOP 해상도 절반으로, Cook Type 변경 등).
 
 ## 옵션
 

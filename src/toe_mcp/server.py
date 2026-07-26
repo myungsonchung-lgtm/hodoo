@@ -515,6 +515,123 @@ def td_pars(path: str) -> str:
     return _fmt_live(_bridge_post("/exec", {"code": code, "token": _bridge_token()}))
 
 
+# Profiler code that runs INSIDE TouchDesigner. Walks every operator, reads its
+# last cook time, and prints a JSON report to stdout. Shared with bridge/toe_ctl.py
+# (keep the two copies in sync). {topn} is filled in before sending.
+PERF_PROBE = r'''
+import json as _json
+_TOPN = %d
+try:
+    _ops = op('/').findChildren(maxDepth=100)
+except Exception:
+    _ops = []
+_rows = []
+for _o in _ops:
+    def _num(_v):
+        try:
+            return float(_v or 0.0)
+        except Exception:
+            return 0.0
+    _cook = _num(getattr(_o, 'cookTime', 0.0))
+    _cpu = _num(getattr(_o, 'cpuCookTime', 0.0))
+    try:
+        _cooks = int(getattr(_o, 'totalCooks', 0) or 0)
+    except Exception:
+        _cooks = 0
+    _row = {'path': _o.path, 'type': getattr(_o, 'type', ''),
+            'family': getattr(_o, 'family', ''),
+            'cook': round(_cook, 3), 'cpu': round(_cpu, 3), 'cooks': _cooks}
+    try:
+        if _o.family == 'TOP':
+            _row['res'] = [int(_o.width), int(_o.height)]
+    except Exception:
+        pass
+    _rows.append(_row)
+_rows.sort(key=lambda r: r['cook'], reverse=True)
+try:
+    _fps = float(getattr(project, 'cookRate', 0.0) or 0.0)
+except Exception:
+    _fps = 0.0
+_summary = {'target_fps': _fps, 'op_count': len(_rows),
+            'total_last_cook_ms': round(sum(r['cook'] for r in _rows), 3)}
+print(_json.dumps({'summary': _summary, 'top': _rows[:_TOPN]}))
+'''
+
+
+def _perf_hints(summary: dict, rows: list[dict]) -> list[str]:
+    hints: list[str] = []
+    fps = summary.get("target_fps") or 0
+    budget = (1000.0 / fps) if fps else 0.0
+    if budget and summary.get("total_last_cook_ms", 0) > budget:
+        hints.append(
+            "Last-cook total %.1fms exceeds the ~%.1fms/frame budget at %g fps — "
+            "the ops below are the ones to trim." % (summary["total_last_cook_ms"], budget, fps)
+        )
+    for r in rows[:5]:
+        res = r.get("res")
+        if res and res[0] * res[1] > 1920 * 1080:
+            hints.append(
+                "%s is %dx%d — big TOPs are costly; lower the resolution or add a "
+                "Resolution/Null downstream, and set 'Cook Type' to Selective." % (r["path"], res[0], res[1])
+            )
+        if r["family"] in ("DAT", "CHOP") and r["cook"] > budget * 0.25 and budget:
+            hints.append(
+                "%s (%s) cooks %.1fms — if it runs Python every frame, cache it or "
+                "drive it from an event instead of cooking continuously." % (r["path"], r["type"], r["cook"])
+            )
+    if not hints:
+        hints.append(
+            "No single obvious hotspot from last-cook times. Let it run a few seconds "
+            "under load, then re-run so cook times reflect the slow moment."
+        )
+    return hints
+
+
+@mcp.tool()
+def td_perf(top: int = 20) -> str:
+    """Profile the running TouchDesigner project and rank the slowest operators.
+
+    Runs a profiler inside the currently-open project that reads every
+    operator's last cook time and returns them ranked slowest-first, plus a
+    summary (target fps, operator count, total last-cook ms) and optimization
+    hints. Use this to find WHAT is slow before changing anything.
+
+    Tip: let the project run under its slow condition for a few seconds first,
+    so the cook times reflect the slow moment.
+
+    Args:
+        top: How many of the slowest operators to return (default 20).
+    """
+    code = PERF_PROBE % int(top)
+    res = _bridge_post("/exec", {"code": code, "token": _bridge_token()})
+    if not res.get("ok", False):
+        return "ERROR:\n" + (res.get("error") or "unknown error")
+    raw = (res.get("stdout") or "").strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return "Unexpected profiler output:\n" + raw
+    summary = data.get("summary", {})
+    rows = data.get("top", [])
+    lines = [
+        "Target fps: %g | ops: %d | last-cook total: %.1f ms"
+        % (summary.get("target_fps", 0), summary.get("op_count", 0),
+           summary.get("total_last_cook_ms", 0.0)),
+        "",
+        "Slowest operators (last cook, ms):",
+    ]
+    for r in rows:
+        res_str = (" res %dx%d" % tuple(r["res"])) if r.get("res") else ""
+        lines.append(
+            "  %8.3f  %-40s %-5s cooks=%d%s"
+            % (r["cook"], r["path"], r["family"], r["cooks"], res_str)
+        )
+    lines.append("")
+    lines.append("Hints:")
+    lines.extend("  - " + h for h in _perf_hints(summary, rows))
+    return "\n".join(lines)
+
+
 def main() -> None:
     """Console-script entry point: run the MCP server over stdio."""
     mcp.run()

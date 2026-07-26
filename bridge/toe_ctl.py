@@ -33,6 +33,7 @@ REPL dot-commands
     .ping              check the connection
     .ls [path]         list child operators of an op (default '/')
     .pars <path>       list an operator's parameters and current values
+    .perf [N]          rank the N slowest operators by cook time (default 20)
     .file <path>       run a local .py file inside TouchDesigner
     .quit / .exit      leave (Ctrl-D also works)
 
@@ -114,6 +115,62 @@ def _pars_code(path: str) -> str:
     )
 
 
+# Profiler that runs inside TouchDesigner and prints a JSON report to stdout.
+# Kept in sync with PERF_PROBE in src/toe_mcp/server.py.
+_PERF_PROBE = r'''
+import json as _json
+_TOPN = %d
+try:
+    _ops = op('/').findChildren(maxDepth=100)
+except Exception:
+    _ops = []
+_rows = []
+for _o in _ops:
+    def _num(_v):
+        try:
+            return float(_v or 0.0)
+        except Exception:
+            return 0.0
+    _row = {'path': _o.path, 'type': getattr(_o, 'type', ''),
+            'family': getattr(_o, 'family', ''),
+            'cook': round(_num(getattr(_o, 'cookTime', 0.0)), 3),
+            'cooks': int(getattr(_o, 'totalCooks', 0) or 0)}
+    try:
+        if _o.family == 'TOP':
+            _row['res'] = [int(_o.width), int(_o.height)]
+    except Exception:
+        pass
+    _rows.append(_row)
+_rows.sort(key=lambda r: r['cook'], reverse=True)
+try:
+    _fps = float(getattr(project, 'cookRate', 0.0) or 0.0)
+except Exception:
+    _fps = 0.0
+print(_json.dumps({'summary': {'target_fps': _fps, 'op_count': len(_rows),
+      'total_last_cook_ms': round(sum(r['cook'] for r in _rows), 3)},
+      'top': _rows[:_TOPN]}))
+'''
+
+
+def _render_perf(result: dict) -> str:
+    import json as _json
+    if not result.get("ok", False):
+        return "ERROR:\n" + (result.get("error") or "unknown error")
+    try:
+        data = _json.loads((result.get("stdout") or "").strip())
+    except _json.JSONDecodeError:
+        return "unexpected profiler output:\n" + (result.get("stdout") or "")
+    s = data.get("summary", {})
+    lines = ["fps=%g  ops=%d  last-cook total=%.1fms"
+             % (s.get("target_fps", 0), s.get("op_count", 0), s.get("total_last_cook_ms", 0.0)),
+             "slowest (ms):"]
+    for r in data.get("top", []):
+        res = (" %dx%d" % tuple(r["res"])) if r.get("res") else ""
+        lines.append("  %8.3f  %-40s %-5s cooks=%d%s"
+                     % (r["cook"], r["path"], r["family"], r["cooks"], res))
+    return "\n".join(lines)
+
+
 def run_repl(bridge: Bridge) -> int:
     connected = bridge.ping()
     status = "connected" if connected else "NOT reachable (is TouchDesigner running td_setup?)"
@@ -147,6 +204,11 @@ def run_repl(bridge: Bridge) -> int:
         if stripped.startswith(".pars "):
             path = stripped[6:].strip()
             print(render(bridge.exec(_pars_code(path))))
+            continue
+        if stripped == ".perf" or stripped.startswith(".perf "):
+            arg = stripped[5:].strip()
+            topn = int(arg) if arg.isdigit() else 20
+            print(_render_perf(bridge.exec(_PERF_PROBE % topn)))
             continue
         if stripped.startswith(".file "):
             path = stripped[6:].strip()
