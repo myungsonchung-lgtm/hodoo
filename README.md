@@ -194,6 +194,19 @@ python dsi_connect.py guide           # 앱 연결 단계별 체크리스트
 COM 포트를 잘못 고름(보통 2개 중 Outgoing), 헤드셋 저전압/슬립. `ports`/`check`로
 바로 확인합니다. 앱에서 `connected`가 뜬 다음에 아래 ②로 넘어가세요.
 
+**앱의 `TCP/IP` 탭이 `not connected`일 때** — 앱은 TCP 서버(기본 `127.0.0.1:8844`)로
+대기 중인데 클라이언트가 아직 안 붙은 상태입니다. 순수 소켓으로 직접 접속해 서버가
+살아 있는지 바로 확인합니다:
+
+```bash
+python dsi_connect.py tcp             # 서버에 접속 시도 (거부/타임아웃이면 앱 TCP 스트리밍 미시작)
+python dsi_connect.py tcp --read      # 접속 + 데이터가 실제로 흐르는지 확인
+python dsi_connect.py tcp --hold      # 접속 유지 → 앱 TCP 상태를 'connected'로 유지 (Ctrl-C 종료)
+```
+
+`연결됨 ✓` 이 나오면 서버는 정상 → 실제 소비자인 TouchDesigner를 붙이면 됩니다(아래 ②).
+`거부됨`이면 앱에서 TCP/IP 스트리밍을 실제로 Start 했는지, 포트/주소가 맞는지 확인하세요.
+
 ### ② DSI-Streamer 앱 ↔ TouchDesigner  (`bridge/dsi_streamer.py`)
 
 TouchDesigner에서 DSI Streamer 피드가 **not connected** 로 뜰 때,

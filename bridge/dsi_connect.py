@@ -23,13 +23,30 @@ The single most common reason DSI-Streamer stays "disconnected" even though
 everything looks right: the COM port is the wrong one, or it is already held by
 another process (a stale DSI-Streamer, a serial DAT in TouchDesigner, or a crash
 that never released it). `ports` / `check` find exactly that.
+
+TCP/IP layer
+------------
+DSI-Streamer can also stream over TCP/IP: it runs a TCP **server** (default
+127.0.0.1:8844) and its "TCP/IP" panel shows "not connected" until a **client**
+connects to that port. TouchDesigner is normally that client. The `tcp` command
+connects a plain socket to prove the server is up (and, with --hold, keeps the
+DSI-Streamer TCP status "connected" without TouchDesigner):
+
+    python dsi_connect.py tcp                 # can we reach DSI-Streamer's TCP server?
+    python dsi_connect.py tcp --read          # connect and confirm data is streaming
+    python dsi_connect.py tcp --hold          # stay connected (Ctrl-C to stop)
+    python dsi_connect.py tcp --host 127.0.0.1 --port 8844
 """
 from __future__ import annotations
 
 import argparse
 import glob
+import socket
 import subprocess
 import sys
+import time
+
+DSI_TCP_PORT = 8844  # DSI-Streamer TCP/IP streaming default port
 
 # Substrings that suggest a port is the DSI headset's Bluetooth link.
 _DSI_HINTS = ("dsi", "wearable", "rfcomm", "bluetooth", "serial over bluetooth",
@@ -214,6 +231,84 @@ def cmd_guide() -> int:
     return 0
 
 
+# --- TCP/IP layer: DSI-Streamer's TCP server -------------------------------
+def probe_tcp(host: str, port: int, timeout: float = 3.0):
+    """Try to open a TCP connection. Return (sock_or_None, state, detail).
+
+    state in {connected, refused, timeout, error}. On 'connected' the caller
+    owns the returned socket and must close it.
+    """
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        return s, "connected", "TCP 서버에 접속됨"
+    except ConnectionRefusedError as e:
+        return None, "refused", "접속 거부 — 그 host:port 에서 서버가 안 열려 있음 (%s)" % e
+    except socket.timeout:
+        return None, "timeout", "응답 없음(timeout) — 방화벽이거나 다른 IP일 수 있음"
+    except OSError as e:
+        return None, "error", str(e)
+
+
+def cmd_tcp(host: str, port: int, do_read: bool, hold: bool, read_timeout: float) -> int:
+    sock, state, detail = probe_tcp(host, port)
+    tag = {"connected": "연결됨 ✓", "refused": "거부됨", "timeout": "응답없음",
+           "error": "오류"}.get(state, state)
+    print("%s:%d  →  %s" % (host, port, tag))
+    print("  %s" % detail)
+
+    if state != "connected":
+        print("  조치:")
+        print("    1) DSI-Streamer 앱에서 'TCP/IP' 스트리밍을 실제로 켰는지 (Start/Enable)")
+        print("    2) 포트가 %d 이 맞는지 (앱 설정과 --port 를 일치)" % port)
+        print("    3) 앱이 127.0.0.1 이 아닌 다른 IP로 열려 있진 않은지 (--host 로 지정)")
+        print("    4) 방화벽이 그 포트를 막고 있진 않은지")
+        return 1
+
+    # connected — optionally confirm data actually streams
+    try:
+        if do_read or hold:
+            sock.settimeout(read_timeout)
+            first = b""
+            try:
+                first = sock.recv(4096)
+            except socket.timeout:
+                first = b""
+            if first:
+                print("  데이터 수신중: 첫 %d바이트 도착 (스트리밍 정상)" % len(first))
+            else:
+                print("  접속은 됐지만 %.0f초간 데이터 없음 — 앱에서 스트리밍이 '시작' 상태인지,"
+                      % read_timeout)
+                print("    헤드셋 신호가 실제로 흐르는지 확인하세요.")
+            if hold:
+                total = len(first)
+                print("  --hold: 접속 유지중. 이 창을 열어두면 DSI-Streamer TCP 상태가"
+                      " 'connected' 로 유지됩니다. (Ctrl-C 로 종료)")
+                sock.settimeout(1.0)
+                try:
+                    while True:
+                        try:
+                            chunk = sock.recv(65536)
+                        except socket.timeout:
+                            chunk = b""
+                        if chunk:
+                            total += len(chunk)
+                            print("\r  누적 %d bytes" % total, end="", flush=True)
+                        else:
+                            time.sleep(0.1)
+                except KeyboardInterrupt:
+                    print("\n  종료.")
+        else:
+            print("  → DSI-Streamer 의 TCP/IP 상태가 이제 'connected' 로 바뀌었을 겁니다.")
+            print("    (이 스크립트는 곧 접속을 닫습니다. 계속 유지하려면 --hold,")
+            print("     실제 소비자는 TouchDesigner 입니다 → python dsi_streamer.py connect --port %d)" % port)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="dsi_connect",
@@ -223,6 +318,12 @@ def main(argv=None) -> int:
     p_ck = sub.add_parser("check", help="test whether a specific port is free or busy")
     p_ck.add_argument("device", help="port, e.g. COM4 or /dev/cu.DSI7-0123")
     sub.add_parser("guide", help="print the step-by-step connection checklist")
+    p_tcp = sub.add_parser("tcp", help="probe DSI-Streamer's TCP server (default 127.0.0.1:8844)")
+    p_tcp.add_argument("--host", default="127.0.0.1")
+    p_tcp.add_argument("--port", type=int, default=DSI_TCP_PORT)
+    p_tcp.add_argument("--read", action="store_true", help="after connecting, confirm data is streaming")
+    p_tcp.add_argument("--hold", action="store_true", help="keep the connection open (Ctrl-C to stop)")
+    p_tcp.add_argument("--timeout", type=float, default=3.0, help="seconds to wait for data (default 3)")
     args = ap.parse_args(argv)
 
     if args.cmd in (None, "ports"):
@@ -231,6 +332,8 @@ def main(argv=None) -> int:
         return cmd_check(args.device)
     if args.cmd == "guide":
         return cmd_guide()
+    if args.cmd == "tcp":
+        return cmd_tcp(args.host, args.port, args.read, args.hold, args.timeout)
     return 2
 
 
