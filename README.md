@@ -161,6 +161,33 @@ slowest (ms):
 이 표는 일반 원칙이고, 실제 수정은 `.perf` 결과를 보고 **당신 프로젝트에 맞게**
 `td_exec`로 바로 적용할 수 있습니다 (예: 특정 TOP 해상도 절반으로, Cook Type 변경 등).
 
+## DSI Streamer 연결 (`not connected` 해결)
+
+TouchDesigner에서 DSI Streamer 피드가 **not connected** 로 뜰 때,
+[`bridge/dsi_streamer.py`](bridge/dsi_streamer.py) 가 열려 있는 프로젝트에서 스트림
+노드를 찾아 주소/포트를 맞추고 소켓을 다시 연결한 뒤, **실제로 데이터가 들어오는지**
+까지 확인해 줍니다. (touchdesigner-mcp WebServer, 포트 9981을 사용 — 표준 라이브러리만 필요)
+
+여기서 "DSI Streamer"는 그 피드를 TD로 들여오는 네트워크 입력 노드를 뜻합니다:
+DSI-Streamer 의 TCP/IP 출력(기본 포트 **8844**)을 받는 **TCP/IP DAT**, 또는 이름에
+`dsi`/`streamer` 가 들어간 DAT/CHOP. 자동으로 찾고, `--name` 으로 직접 지정할 수도 있습니다.
+
+```bash
+python dsi_streamer.py status                       # 스트림 노드 상태 (연결/데이터 여부)
+python dsi_streamer.py connect                       # 자동으로 찾은 노드 재연결
+python dsi_streamer.py connect --host 127.0.0.1 --port 8844
+python dsi_streamer.py connect --name /project1/dsi_in
+python dsi_streamer.py connect --name /project1/dsi_in --create   # 없으면 새로 생성
+python dsi_streamer.py disconnect                    # 스트림 끄기 (Active off)
+```
+
+`connect` 는 주소/포트만 설정하고 노드의 `Active` 를 off→on 으로 토글하는 것이라
+안전하며, `disconnect`(또는 Active 를 다시 켜기)로 되돌릴 수 있습니다.
+
+데이터가 계속 안 들어오면 확인할 것: ① DSI-Streamer 앱에서 TCP/IP 스트리밍이 켜져
+있는지(기본 포트 8844), ② 주소/포트가 맞는지(`--host`/`--port`), ③ 헤드셋이
+DSI-Streamer 에 붙어 실제 신호가 나오는지.
+
 ## 옵션
 
 ```bash
