@@ -161,7 +161,40 @@ slowest (ms):
 이 표는 일반 원칙이고, 실제 수정은 `.perf` 결과를 보고 **당신 프로젝트에 맞게**
 `td_exec`로 바로 적용할 수 있습니다 (예: 특정 TOP 해상도 절반으로, Cook Type 변경 등).
 
-## DSI Streamer 연결 (`not connected` 해결)
+## DSI Streamer 연결 (`disconnected` / `not connected` 해결)
+
+DSI 연결은 두 계층입니다. **어디서** disconnected가 뜨는지에 따라 고칠 대상이 다릅니다.
+
+```
+[헤드셋] ──블루투스(가상 COM 포트)──► [DSI-Streamer 앱] ──TCP 8844──► [TouchDesigner]
+         └── ① dsi_connect.py ──┘                     └── ② dsi_streamer.py ──┘
+```
+
+- **① DSI-Streamer 앱 자체가 `disconnected`** (헤드셋이 앱에 안 붙음) →
+  [`bridge/dsi_connect.py`](bridge/dsi_connect.py). TouchDesigner와 무관하며, 이게
+  먼저 붙어야 ②가 의미 있습니다.
+- **② TouchDesigner 노드가 `not connected`** (앱은 붙었는데 TD로 안 들어옴) →
+  [`bridge/dsi_streamer.py`](bridge/dsi_streamer.py).
+
+### ① 헤드셋 ↔ DSI-Streamer 앱  (`bridge/dsi_connect.py`)
+
+DSI 헤드셋은 블루투스로 페어링되면 **가상 시리얼/COM 포트**로 잡히고, DSI-Streamer가
+그 포트로 연결합니다. "계속 disconnected"의 실제 원인은 대개 **포트가 틀렸거나, 다른
+프로그램이 그 포트를 잡고 있는(busy)** 경우입니다. 이 도구가 그걸 짚어줍니다.
+(TouchDesigner 불필요, 표준 라이브러리로 동작하며 `pip install pyserial` 시 더 정확)
+
+```bash
+python dsi_connect.py ports          # 포트 목록 + ★DSI 후보 + 사용중(busy) 여부
+python dsi_connect.py check COM4      # 특정 포트가 비었나, 다른 앱이 잡았나
+python dsi_connect.py check /dev/cu.DSI7-0123
+python dsi_connect.py guide           # 앱 연결 단계별 체크리스트
+```
+
+가장 흔한 함정: 포트를 다른 앱(이전 DSI-Streamer 창, TD의 Serial DAT 등)이 잡고 있음,
+COM 포트를 잘못 고름(보통 2개 중 Outgoing), 헤드셋 저전압/슬립. `ports`/`check`로
+바로 확인합니다. 앱에서 `connected`가 뜬 다음에 아래 ②로 넘어가세요.
+
+### ② DSI-Streamer 앱 ↔ TouchDesigner  (`bridge/dsi_streamer.py`)
 
 TouchDesigner에서 DSI Streamer 피드가 **not connected** 로 뜰 때,
 [`bridge/dsi_streamer.py`](bridge/dsi_streamer.py) 가 열려 있는 프로젝트에서 스트림
