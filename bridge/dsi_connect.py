@@ -36,6 +36,17 @@ DSI-Streamer TCP status "connected" without TouchDesigner):
     python dsi_connect.py tcp --read          # connect and confirm data is streaming
     python dsi_connect.py tcp --hold          # stay connected (Ctrl-C to stop)
     python dsi_connect.py tcp --host 127.0.0.1 --port 8844
+
+The green "connected" status in DSI-Streamer only turns on when the OTHER side
+actually establishes the TCP connection — "Activate TCP/IP socket" alone does not
+light it. Which side connects depends on DSI-Streamer's mode:
+  - DSI-Streamer as SERVER (default): a client must connect in  -> use `tcp --hold`
+  - DSI-Streamer as CLIENT: it connects out to a server         -> use `serve`
+If `tcp` is refused, DSI-Streamer may be in client mode (or not listening); then
+run `serve` so this side listens and DSI-Streamer can connect to it:
+
+    python dsi_connect.py serve               # listen on 127.0.0.1:8844 and wait
+    python dsi_connect.py serve --host 0.0.0.0 --port 8844
 """
 from __future__ import annotations
 
@@ -258,10 +269,13 @@ def cmd_tcp(host: str, port: int, do_read: bool, hold: bool, read_timeout: float
 
     if state != "connected":
         print("  조치:")
-        print("    1) DSI-Streamer 앱에서 'TCP/IP' 스트리밍을 실제로 켰는지 (Start/Enable)")
+        print("    1) DSI-Streamer 앱에서 'Activate TCP/IP socket' 을 실제로 켰는지")
         print("    2) 포트가 %d 이 맞는지 (앱 설정과 --port 를 일치)" % port)
-        print("    3) 앱이 127.0.0.1 이 아닌 다른 IP로 열려 있진 않은지 (--host 로 지정)")
+        print("    3) 앱의 IP가 127.0.0.1 이 아닌 다른 값이면 --host 로 그 값을 지정")
         print("    4) 방화벽이 그 포트를 막고 있진 않은지")
+        print("    ※ 그래도 거부되면 DSI-Streamer 가 '클라이언트' 모드일 수 있습니다.")
+        print("      이 경우엔 이쪽이 서버가 되어 기다려야 합니다:")
+        print("        python dsi_connect.py serve --host %s --port %d" % (host, port))
         return 1
 
     # connected — optionally confirm data actually streams
@@ -309,6 +323,69 @@ def cmd_tcp(host: str, port: int, do_read: bool, hold: bool, read_timeout: float
     return 0
 
 
+def cmd_serve(host: str, port: int) -> int:
+    """Listen as a TCP server so a client-mode DSI-Streamer can connect to us.
+
+    Use this when DSI-Streamer's TCP/IP is set to *connect out* (client) and its
+    status stays "not connected" because nothing is listening on the target. The
+    moment DSI-Streamer connects here, its status LED turns green.
+    """
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind((host, port))
+    except OSError as e:
+        msg = str(e).lower()
+        print("%s:%d 에서 서버를 열 수 없음: %s" % (host, port, e))
+        if "address already in use" in msg or "in use" in msg or "eaddrinuse" in msg:
+            print("  → 그 포트는 이미 누가 쓰고 있습니다. 흔히 DSI-Streamer 가 *서버 모드*로")
+            print("    이미 열어둔 경우입니다. 그렇다면 이쪽이 서버가 아니라 '클라이언트'로 붙어야 합니다:")
+            print("      python dsi_connect.py tcp --hold --host %s --port %d" % (host, port))
+        elif "cannot assign" in msg or "address not available" in msg:
+            print("  → 그 IP로는 못 엽니다. 이 PC의 IP거나 127.0.0.1 이어야 합니다 (--host).")
+        return 1
+    srv.listen(1)
+    print("서버 대기중: %s:%d  (Ctrl-C 로 종료)" % (host, port))
+    print("  DSI-Streamer 가 '클라이언트' 모드라면, 앱의 TCP/IP 대상 주소를 이 값으로 맞추고")
+    print("  'Activate TCP/IP socket' 하세요. 붙는 순간 status 가 초록(connected)이 됩니다.")
+    try:
+        while True:
+            srv.settimeout(1.0)
+            try:
+                conn, addr = srv.accept()
+            except socket.timeout:
+                continue
+            print("\n연결됨 ✓  %s:%s 에서 접속 — DSI-Streamer status 가 지금 초록일 겁니다." % addr)
+            total = 0
+            conn.settimeout(1.0)
+            try:
+                while True:
+                    try:
+                        chunk = conn.recv(65536)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        print("\n  상대가 연결을 닫음. 다음 접속 대기...")
+                        break
+                    total += len(chunk)
+                    print("\r  누적 %d bytes 수신" % total, end="", flush=True)
+            except (ConnectionResetError, OSError):
+                print("\n  연결 끊김. 다음 접속 대기...")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    except KeyboardInterrupt:
+        print("\n종료.")
+    finally:
+        try:
+            srv.close()
+        except Exception:
+            pass
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="dsi_connect",
@@ -324,6 +401,9 @@ def main(argv=None) -> int:
     p_tcp.add_argument("--read", action="store_true", help="after connecting, confirm data is streaming")
     p_tcp.add_argument("--hold", action="store_true", help="keep the connection open (Ctrl-C to stop)")
     p_tcp.add_argument("--timeout", type=float, default=3.0, help="seconds to wait for data (default 3)")
+    p_sv = sub.add_parser("serve", help="listen as a TCP server (for a client-mode DSI-Streamer)")
+    p_sv.add_argument("--host", default="127.0.0.1", help="IP to bind (0.0.0.0 = any interface)")
+    p_sv.add_argument("--port", type=int, default=DSI_TCP_PORT)
     args = ap.parse_args(argv)
 
     if args.cmd in (None, "ports"):
@@ -334,6 +414,8 @@ def main(argv=None) -> int:
         return cmd_guide()
     if args.cmd == "tcp":
         return cmd_tcp(args.host, args.port, args.read, args.hold, args.timeout)
+    if args.cmd == "serve":
+        return cmd_serve(args.host, args.port)
     return 2
 
 

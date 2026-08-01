@@ -194,18 +194,24 @@ python dsi_connect.py guide           # 앱 연결 단계별 체크리스트
 COM 포트를 잘못 고름(보통 2개 중 Outgoing), 헤드셋 저전압/슬립. `ports`/`check`로
 바로 확인합니다. 앱에서 `connected`가 뜬 다음에 아래 ②로 넘어가세요.
 
-**앱의 `TCP/IP` 탭이 `not connected`일 때** — 앱은 TCP 서버(기본 `127.0.0.1:8844`)로
-대기 중인데 클라이언트가 아직 안 붙은 상태입니다. 순수 소켓으로 직접 접속해 서버가
-살아 있는지 바로 확인합니다:
+**앱의 `TCP/IP` status(초록불)가 안 켜지고 `not connected`일 때** — DSI-Streamer의
+초록불은 `Activate TCP/IP socket` 만으로는 안 켜지고, **반대편이 실제로 TCP 연결을
+맺어야** 켜집니다. 누가 연결하느냐는 앱의 모드에 달렸습니다:
 
-```bash
-python dsi_connect.py tcp             # 서버에 접속 시도 (거부/타임아웃이면 앱 TCP 스트리밍 미시작)
-python dsi_connect.py tcp --read      # 접속 + 데이터가 실제로 흐르는지 확인
-python dsi_connect.py tcp --hold      # 접속 유지 → 앱 TCP 상태를 'connected'로 유지 (Ctrl-C 종료)
-```
+- **앱이 서버 모드(기본, `127.0.0.1:8844`에서 대기)** → 이쪽이 **클라이언트로 접속**해야 초록:
+  ```bash
+  python dsi_connect.py tcp --hold    # 접속해서 유지 → 앱 status 초록 (Ctrl-C 종료)
+  python dsi_connect.py tcp --read    # 접속 + 데이터가 실제로 흐르는지 확인
+  ```
+- **앱이 클라이언트 모드(대상 주소로 접속하러 감)** → 이쪽이 **서버로 열어 대기**해야 초록:
+  ```bash
+  python dsi_connect.py serve         # 127.0.0.1:8844 에서 대기 → 앱이 붙으면 초록
+  python dsi_connect.py serve --host 0.0.0.0 --port 8844
+  ```
 
-`연결됨 ✓` 이 나오면 서버는 정상 → 실제 소비자인 TouchDesigner를 붙이면 됩니다(아래 ②).
-`거부됨`이면 앱에서 TCP/IP 스트리밍을 실제로 Start 했는지, 포트/주소가 맞는지 확인하세요.
+먼저 `tcp --hold` 를 해보고, **`거부됨`이 나오면 반대로 `serve`** 를 쓰세요(둘 중 하나가
+앱 모드에 맞습니다). `연결됨 ✓`(또는 serve에서 `연결됨 ✓ … 접속`)이 뜨는 순간 앱 status가
+초록으로 바뀝니다. 그게 확인되면 실제 소비자인 TouchDesigner를 붙이면 됩니다(아래 ②).
 
 ### ② DSI-Streamer 앱 ↔ TouchDesigner
 
