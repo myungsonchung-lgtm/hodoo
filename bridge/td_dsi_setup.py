@@ -19,7 +19,8 @@
 # --- 설정 --------------------------------------------------------------------
 HOST = '127.0.0.1'       # DSI-Streamer 가 열려 있는 IP (다른 PC면 그 IP)
 PORT = 8844              # DSI-Streamer TCP/IP 스트리밍 포트 (앱 설정과 일치)
-PARENT = '/project1'     # 노드를 만들 위치 (없으면 자동으로 '/' 사용)
+PARENT = ''              # 노드를 만들 위치. ''(빈값)이면 메인 컨테이너를 자동 탐지.
+                         # 특정 위치에 넣고 싶으면 경로 지정 (예: '/project1').
 NAME = 'dsi_streamer'
 CALLBACKS_NAME = 'dsi_streamer_callbacks'
 
@@ -82,10 +83,31 @@ def _setpar(o, names, value):
     return None
 
 
+def _pick_parent():
+    """Where to place the nodes. Explicit PARENT wins; else auto-detect the main
+    container (the busiest COMP under root), else fall back to root."""
+    if PARENT:
+        p = op(PARENT)  # noqa: F821
+        if p is not None:
+            return p
+    root = op('/')  # noqa: F821
+    if root is None:
+        return None
+    try:
+        comps = [c for c in root.children if getattr(c, 'isCOMP', False)]
+        comps = [c for c in comps if not c.name.startswith(('local', 'sys'))]
+        if comps:
+            comps.sort(key=lambda c: len(c.findChildren(maxDepth=99)), reverse=True)
+            return comps[0]
+    except Exception:
+        pass
+    return root
+
+
 def setup():
-    parent_op = op(PARENT) or op('/project1') or op('/')  # noqa: F821
+    parent_op = _pick_parent()
     if parent_op is None:
-        raise RuntimeError('parent not found: ' + PARENT)
+        raise RuntimeError('parent not found (op("/") returned None)')
 
     cb = parent_op.op(CALLBACKS_NAME)
     if cb is None:
@@ -111,6 +133,7 @@ def setup():
 
     print('=' * 60)
     print('DSI-Streamer -> TouchDesigner 연결 설정 완료')
+    print('  container :', parent_op.path, '(자동 탐지)' if not PARENT else '')
     print('  node      :', dat.path)
     print('  callbacks :', cb.path, '' if got_cb else '(콜백 파라미터 못 찾음!)')
     print('  target    : %s:%s' % (HOST, PORT),
@@ -120,9 +143,10 @@ def setup():
         print('  ! 이 TD 버전의 TCP/IP DAT 파라미터명이 달라 일부를 자동 설정 못했습니다.')
         print('    노드를 열어 Network Address/Port 를 %s / %s 로 직접 확인하세요.' % (HOST, PORT))
     print('-' * 60)
-    print('DSI-Streamer 앱의 TCP/IP 상태가 이제 connected 로 바뀌었는지 확인하세요.')
+    print('DSI-Streamer 앱의 TCP/IP 상태가 이제 connected(초록) 로 바뀌었는지 확인하세요.')
     print("연결/수신 확인:  op('%s').fetch('connected', False),"
           " op('%s').fetch('bytes', 0)" % (dat.path, dat.path))
+    print('※ 이 노드를 파일에 남기려면 지금 프로젝트를 저장하세요 (Ctrl+S).')
 
     # 약 1초 뒤 실제 연결/수신 상태를 Textport 에 한 번 더 찍어 줍니다.
     try:

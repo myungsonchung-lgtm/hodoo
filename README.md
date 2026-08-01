@@ -221,14 +221,19 @@ TouchDesigner 를 그 서버에 **클라이언트로 붙이면** 됩니다. 두 
 **(A) 가장 확실 — TD 안에 붙여넣어 한 번에 연결** ([`bridge/td_dsi_setup.py`](bridge/td_dsi_setup.py))
 
 브릿지(9981) 설치 여부와 무관하게, TouchDesigner 안에서 바로 실행되는 셋업 스크립트입니다.
-`urbanbreak.space.toe` 가 열린 상태에서 `Alt`+`T` 로 Textport 를 열고 이 파일 내용을
-통째로 붙여넣고 Enter (또는 Text DAT 에 붙여넣고 우클릭 → Run Script).
+DSI 연결을 넣고 싶은 프로젝트(예: `urbanbreak.brain.4.toe`)를 **연 상태에서**:
 
-실행하면 DSI-Streamer 서버(`127.0.0.1:8844`)에 접속하는 **TCP/IP DAT `dsi_streamer`** 와
-연결/수신 콜백(`dsi_streamer_callbacks`)이 생기고 바로 Active 됩니다. DSI-Streamer 앱의
-TCP/IP 상태가 그 순간 **connected** 로 바뀝니다. 약 1초 뒤 Textport 에 수신 상태
-(`connected=..., bytes=...`)가 찍혀 실제로 데이터가 들어오는지 확인됩니다.
-다른 PC/포트면 파일 상단의 `HOST`/`PORT` 만 고치세요.
+1. `Alt`+`T` 로 Textport 를 열고 이 파일 내용을 통째로 붙여넣고 Enter
+   (또는 Text DAT 에 붙여넣고 노드 우클릭 → Run Script).
+2. 실행되면 프로젝트의 **메인 컨테이너를 자동 탐지**해 그 안에 DSI-Streamer 서버
+   (`127.0.0.1:8844`)로 접속하는 **TCP/IP DAT `dsi_streamer`** 와 연결/수신 콜백
+   (`dsi_streamer_callbacks`)을 만들고 바로 Active 합니다. Textport 에 어느 컨테이너에
+   만들었는지(`container: ...`)와, 약 1초 뒤 수신 상태(`connected=..., bytes=...`)가 찍힙니다.
+3. **`Ctrl+S` 로 저장** — 그래야 이 노드들이 그 `.toe` 파일 안에 영구히 남습니다.
+   (다음에 파일을 열면 자동으로 다시 뜨고 연결됩니다.)
+
+특정 위치에 넣고 싶으면 파일 상단 `PARENT` 에 경로를 지정하고, 다른 PC/포트면
+`HOST`/`PORT` 를 고치세요.
 
 **(B) 터미널에서 원격 제어** ([`bridge/dsi_streamer.py`](bridge/dsi_streamer.py) — 9981 브릿지 필요)
 
