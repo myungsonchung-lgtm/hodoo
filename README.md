@@ -207,7 +207,24 @@ python dsi_connect.py tcp --hold      # 접속 유지 → 앱 TCP 상태를 'con
 `연결됨 ✓` 이 나오면 서버는 정상 → 실제 소비자인 TouchDesigner를 붙이면 됩니다(아래 ②).
 `거부됨`이면 앱에서 TCP/IP 스트리밍을 실제로 Start 했는지, 포트/주소가 맞는지 확인하세요.
 
-### ② DSI-Streamer 앱 ↔ TouchDesigner  (`bridge/dsi_streamer.py`)
+### ② DSI-Streamer 앱 ↔ TouchDesigner
+
+DSI-Streamer TCP 서버가 열려 있으면(위 `dsi_connect.py tcp` 가 `연결됨 ✓`), 이제
+TouchDesigner 를 그 서버에 **클라이언트로 붙이면** 됩니다. 두 가지 방법이 있습니다.
+
+**(A) 가장 확실 — TD 안에 붙여넣어 한 번에 연결** ([`bridge/td_dsi_setup.py`](bridge/td_dsi_setup.py))
+
+브릿지(9981) 설치 여부와 무관하게, TouchDesigner 안에서 바로 실행되는 셋업 스크립트입니다.
+`urbanbreak.space.toe` 가 열린 상태에서 `Alt`+`T` 로 Textport 를 열고 이 파일 내용을
+통째로 붙여넣고 Enter (또는 Text DAT 에 붙여넣고 우클릭 → Run Script).
+
+실행하면 DSI-Streamer 서버(`127.0.0.1:8844`)에 접속하는 **TCP/IP DAT `dsi_streamer`** 와
+연결/수신 콜백(`dsi_streamer_callbacks`)이 생기고 바로 Active 됩니다. DSI-Streamer 앱의
+TCP/IP 상태가 그 순간 **connected** 로 바뀝니다. 약 1초 뒤 Textport 에 수신 상태
+(`connected=..., bytes=...`)가 찍혀 실제로 데이터가 들어오는지 확인됩니다.
+다른 PC/포트면 파일 상단의 `HOST`/`PORT` 만 고치세요.
+
+**(B) 터미널에서 원격 제어** ([`bridge/dsi_streamer.py`](bridge/dsi_streamer.py) — 9981 브릿지 필요)
 
 TouchDesigner에서 DSI Streamer 피드가 **not connected** 로 뜰 때,
 [`bridge/dsi_streamer.py`](bridge/dsi_streamer.py) 가 열려 있는 프로젝트에서 스트림
